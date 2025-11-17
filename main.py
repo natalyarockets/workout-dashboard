@@ -1,8 +1,11 @@
+# main.py
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
 import openai
 import os
+import json
 
 # ------------------------------------------------------------
 # CONFIG
@@ -61,21 +64,26 @@ Each "line" usually includes:
 - BB means barbell
 
 OUTPUT:
-You MUST return a JSON array of objects, each object describing ONE set, using this schema:
+You MUST return a JSON OBJECT with a single key "sets" whose value is an array
+of objects, each object describing ONE set, using this schema:
 
 {
-  "date": "YYYY-MM-DD or empty if not present",
-  "exercise_name": "Standardized name including equipment; e.g., 'DB Bench Press'",
-  "weight": number,
-  "reps_unassisted": number,
-  "reps_assisted": number,
-  "reps_total": number,
-  "tempo_notes": "freeform string",
-  "injury_flag": boolean,
-  "injury_notes": "string if injury_flag true",
-  "equipment": "DB or BB or BW or Machine, etc.",
-  "source_line": "raw input line",
-  "notes": "anything leftover"
+  "sets": [
+    {
+      "date": "YYYY-MM-DD or empty if not present",
+      "exercise_name": "Standardized name including equipment; e.g., 'DB Bench Press'",
+      "weight": number,
+      "reps_unassisted": number,
+      "reps_assisted": number,
+      "reps_total": number,
+      "tempo_notes": "freeform string",
+      "injury_flag": boolean,
+      "injury_notes": "string if injury_flag true",
+      "equipment": "DB or BB or BW or Machine, etc.",
+      "source_line": "raw input line",
+      "notes": "anything leftover"
+    }
+  ]
 }
 
 RULES:
@@ -91,7 +99,7 @@ RULES:
 - equipment: DB, BB, BW, Machine, Cable, etc.
 
 Your output MUST be valid JSON with NO commentary, NO trailing text.
-Only return the array.
+Only return the JSON object with the "sets" array.
 """
 
 
@@ -113,25 +121,38 @@ def parse_text(req: ParseRequest):
             {"role": "system", "content": PROMPT},
             {"role": "user", "content": text}
         ],
-        temperature=0
+        temperature=0,
+        response_format={"type": "json_object"},  # enforce strict JSON
     )
 
-    raw = completion.choices[0].message.content
+    raw = completion.choices[0].message.content or ""
 
-    # The model must output an array. If it fails, fallback empty.
+    # Try to parse JSON strictly, with code-fence stripping fallback
+    parsed_sets: List[dict] = []
     try:
-        parsed_list = client.responses.parse(raw)  # Only works in newer SDK
-    except:
-        # manual fallback
-        import json
+        obj = json.loads(raw)
+    except Exception:
+        # strip code fences if present
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            try:
+                cleaned = cleaned.split("```", 2)[1]
+            except Exception:
+                pass
         try:
-            parsed_list = json.loads(raw)
-        except:
-            parsed_list = []
+            obj = json.loads(cleaned)
+        except Exception:
+            obj = {"sets": []}
+
+    if isinstance(obj, dict) and "sets" in obj:
+        candidate = obj.get("sets") or []
+    else:
+        # allow bare array fallback
+        candidate = obj if isinstance(obj, list) else []
 
     # Validate into Pydantic models
-    out = []
-    for item in parsed_list:
+    out: List[ParsedSet] = []
+    for item in candidate:
         try:
             out.append(ParsedSet(**item))
         except:
